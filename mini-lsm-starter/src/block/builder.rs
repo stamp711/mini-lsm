@@ -22,7 +22,12 @@ impl BlockBuilder {
         }
     }
 
+    pub fn estimated_size(&self) -> usize {
+        self.current_block_size
+    }
+
     /// Adds a key-value pair to the block. Returns false when the block is full.
+    /// Added keys must be in sorted order.
     #[must_use]
     pub fn add(&mut self, key: &[u8], value: &[u8]) -> bool {
         assert!(!key.is_empty(), "key must not be empty");

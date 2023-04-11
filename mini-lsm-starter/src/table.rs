@@ -9,17 +9,21 @@ use std::sync::Arc;
 
 use anyhow::Result;
 pub use builder::SsTableBuilder;
-use bytes::{Buf, Bytes};
+use bytes::{Buf, BufMut, Bytes};
 pub use iterator::SsTableIterator;
 
 use crate::block::Block;
 use crate::lsm_storage::BlockCache;
 
+const SIZEOF_U32: usize = std::mem::size_of::<u32>();
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct BlockMeta {
-    /// Offset of this data block.
+    /// Offset of this data block. Encoded as u32.
     pub offset: usize,
-    /// The first key of the data block.
+    /// Length of this data block. Encoded as u32.
+    pub len: usize,
+    /// The first key of the data block. Encoded as key_length (u16) + key ([u8]).
     pub first_key: Bytes,
 }
 
@@ -30,12 +34,46 @@ impl BlockMeta {
         #[allow(clippy::ptr_arg)] // remove this allow after you finish
         buf: &mut Vec<u8>,
     ) {
-        unimplemented!()
+        // Calculate the estimated size of encoded block.
+        let mut estimated_size = 0;
+        for meta in block_meta {
+            assert!(meta.offset < u32::MAX as usize, "offset too large for u32");
+            estimated_size += std::mem::size_of::<u32>();
+            assert!(meta.len < u32::MAX as usize, "len too large for u32");
+            estimated_size += std::mem::size_of::<u32>();
+            assert!(
+                meta.first_key.len() < u16::MAX as usize,
+                "key too large for u16"
+            );
+            estimated_size += std::mem::size_of::<u16>();
+            estimated_size += meta.first_key.len();
+        }
+
+        buf.reserve(estimated_size);
+
+        for meta in block_meta {
+            buf.put_u32_le(meta.offset as u32);
+            buf.put_u32_le(meta.len as u32);
+            buf.put_u16_le(meta.first_key.len() as u16);
+            buf.put_slice(&meta.first_key);
+        }
     }
 
     /// Decode block meta from a buffer.
-    pub fn decode_block_meta(buf: impl Buf) -> Vec<BlockMeta> {
-        unimplemented!()
+    pub fn decode_block_meta(mut buf: impl Buf) -> Vec<BlockMeta> {
+        let mut res = vec![];
+        while buf.has_remaining() {
+            let offset = buf.get_u32_le() as usize;
+            let len = buf.get_u32_le() as usize;
+            let key_len = buf.get_u16_le() as usize;
+            let first_key = buf.copy_to_bytes(key_len);
+            res.push(BlockMeta {
+                offset,
+                len,
+                first_key,
+            });
+        }
+        res
     }
 }
 
@@ -53,7 +91,7 @@ impl FileObject {
 
     /// Create a new file object (day 2) and write the file to the disk (day 4).
     pub fn create(path: &Path, data: Vec<u8>) -> Result<Self> {
-        unimplemented!()
+        Ok(Self(Bytes::from(data)))
     }
 
     pub fn open(path: &Path) -> Result<Self> {
@@ -75,12 +113,30 @@ impl SsTable {
 
     /// Open SSTable from a file.
     pub fn open(id: usize, block_cache: Option<Arc<BlockCache>>, file: FileObject) -> Result<Self> {
-        unimplemented!()
+        let file_size = file.size();
+        let block_meta_offset = file
+            .read(file_size - SIZEOF_U32 as u64, SIZEOF_U32 as u64)?
+            .as_slice()
+            .get_u32_le() as usize;
+        let block_meta_len = file_size - SIZEOF_U32 as u64 - block_meta_offset as u64;
+
+        let block_metas = BlockMeta::decode_block_meta(
+            file.read(block_meta_offset as u64, block_meta_len)?
+                .as_slice(),
+        );
+
+        Ok(Self {
+            file,
+            block_metas,
+            block_meta_offset,
+        })
     }
 
     /// Read a block from the disk.
     pub fn read_block(&self, block_idx: usize) -> Result<Arc<Block>> {
-        unimplemented!()
+        let meta = &self.block_metas[block_idx];
+        let buf = self.file.read(meta.offset as u64, meta.len as u64)?;
+        Ok(Arc::new(Block::decode(&buf)))
     }
 
     /// Read a block from disk, with block cache. (Day 4)
