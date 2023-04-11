@@ -15,6 +15,25 @@ pub struct Block {
 }
 
 impl Block {
+    pub fn get_entry(&self, idx: usize) -> (&[u8], &[u8]) {
+        let offset = self.offsets[idx] as usize;
+        let end = if idx == self.offsets.len() - 1 {
+            self.data.len()
+        } else {
+            self.offsets[idx + 1] as usize
+        };
+
+        let mut entry = &self.data[offset..end];
+
+        let key_len = entry.get_u16_le() as usize;
+        let key = &entry[..key_len];
+        entry.advance(key_len);
+        let value_len = entry.get_u16_le() as usize;
+        let value = &entry[..value_len];
+
+        (key, value)
+    }
+
     pub fn encode(&self) -> Bytes {
         let mut b =
             BytesMut::with_capacity(self.data.len() + SIZEOF_U16 * self.offsets.len() + SIZEOF_U16);
