@@ -146,12 +146,24 @@ impl SsTable {
 
     /// Find the block that may contain `key`.
     pub fn find_block_idx(&self, key: &[u8]) -> usize {
-        unimplemented!()
+        let mut l = 0;
+        let mut r = self.block_metas.len();
+        // Target block is in [l, r).
+        while r - l > 1 {
+            let mid = (l + r) / 2;
+            if self.block_metas[mid].first_key > key {
+                r = mid;
+            } else {
+                l = mid
+            }
+        }
+        // Only one block left.
+        l
     }
 
     /// Get number of data blocks.
     pub fn num_of_blocks(&self) -> usize {
-        unimplemented!()
+        self.block_metas.len()
     }
 }
 
