@@ -10,10 +10,13 @@ use bytes::Bytes;
 use parking_lot::RwLock;
 
 use crate::block::Block;
+use crate::iterators::merge_iterator::MergeIterator;
+use crate::iterators::two_merge_iterator::TwoMergeIterator;
 use crate::iterators::StorageIterator;
 use crate::lsm_iterator::{FusedIterator, LsmIterator};
 use crate::mem_table::MemTable;
 use crate::table::{SsTable, SsTableIterator};
+use crate::util::map_bound;
 
 pub type BlockCache = moka::sync::Cache<(usize, usize), Arc<Block>>;
 
@@ -116,9 +119,41 @@ impl LsmStorage {
     /// Create an iterator over a range of keys.
     pub fn scan(
         &self,
-        _lower: Bound<&[u8]>,
-        _upper: Bound<&[u8]>,
+        lower: Bound<&[u8]>,
+        upper: Bound<&[u8]>,
     ) -> Result<FusedIterator<LsmIterator>> {
-        unimplemented!()
+        let i = self.inner.read().clone();
+
+        // Create merged iterators over memtables.
+        let memtable_iters = i
+            .imm_memtables
+            .iter()
+            .chain(std::iter::once(&i.memtable))
+            .rev()
+            .map(|memtable| Box::new(memtable.scan(lower, upper)))
+            .collect();
+        let merged_memtable_iter = MergeIterator::create(memtable_iters);
+
+        // Create merged iterators over L0 SSTables, but in range (lower..).
+        let mut l0_iters = vec![];
+        for table in i.l0_sstables.iter().rev().cloned() {
+            let iter = match lower {
+                Bound::Unbounded => SsTableIterator::create_and_seek_to_first(table)?,
+                Bound::Included(key) => SsTableIterator::create_and_seek_to_key(table, key)?,
+                Bound::Excluded(key) => {
+                    let mut iter = SsTableIterator::create_and_seek_to_key(table, key)?;
+                    if iter.is_valid() && iter.key() == key {
+                        iter.next()?;
+                    }
+                    iter
+                }
+            };
+            l0_iters.push(Box::new(iter));
+        }
+        let merged_l0_iter = MergeIterator::create(l0_iters);
+
+        let iter = TwoMergeIterator::create(merged_memtable_iter, merged_l0_iter)?;
+
+        LsmIterator::new_with_upper_bound(iter, map_bound(upper)).map(FusedIterator::new)
     }
 }

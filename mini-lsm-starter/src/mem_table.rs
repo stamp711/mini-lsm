@@ -8,18 +8,11 @@ use ouroboros::self_referencing;
 
 use crate::iterators::StorageIterator;
 use crate::table::SsTableBuilder;
+use crate::util::map_bound;
 
 /// A basic mem-table based on crossbeam-skiplist
 pub struct MemTable {
     map: Arc<SkipMap<Bytes, Bytes>>,
-}
-
-fn map_bound(bound: Bound<&[u8]>) -> Bound<Bytes> {
-    match bound {
-        Bound::Included(x) => Bound::Included(Bytes::copy_from_slice(x)),
-        Bound::Excluded(x) => Bound::Excluded(Bytes::copy_from_slice(x)),
-        Bound::Unbounded => Bound::Unbounded,
-    }
 }
 
 impl MemTable {
