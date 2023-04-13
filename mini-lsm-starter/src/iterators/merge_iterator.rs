@@ -1,7 +1,5 @@
-#![allow(unused_variables)] // TODO(you): remove this lint after implementing this mod
-#![allow(dead_code)] // TODO(you): remove this lint after implementing this mod
-
-use std::cmp::{self};
+use std::cmp;
+use std::collections::binary_heap::PeekMut;
 use std::collections::BinaryHeap;
 
 use anyhow::Result;
@@ -25,7 +23,7 @@ impl<I: StorageIterator> PartialOrd for HeapWrapper<I> {
             cmp::Ordering::Less => Some(cmp::Ordering::Less),
             cmp::Ordering::Equal => self.0.partial_cmp(&other.0),
         }
-        .map(|x| x.reverse())
+        .map(|x| x.reverse()) // Reverse the order to make a min-heap.
     }
 }
 
@@ -39,29 +37,76 @@ impl<I: StorageIterator> Ord for HeapWrapper<I> {
 /// iterators, perfer the one with smaller index.
 pub struct MergeIterator<I: StorageIterator> {
     iters: BinaryHeap<HeapWrapper<I>>,
-    current: HeapWrapper<I>,
+    current: Option<HeapWrapper<I>>,
 }
 
 impl<I: StorageIterator> MergeIterator<I> {
     pub fn create(iters: Vec<Box<I>>) -> Self {
-        unimplemented!()
+        let iters: BinaryHeap<_> = iters
+            .into_iter()
+            .enumerate()
+            .filter_map(|(idx, iter)| iter.is_valid().then_some(HeapWrapper(idx, iter)))
+            .collect();
+        let mut this = MergeIterator {
+            iters,
+            current: None,
+        };
+        // Seek to first key. In case of all iterators being invalid, this will be `None`, indicating the merge iterator is invalid.
+        this.seek_to_next_in_heap();
+        this
+    }
+
+    fn seek_to_next_in_heap(&mut self) {
+        assert!(self.current.is_none());
+        self.current = self.iters.pop();
     }
 }
 
 impl<I: StorageIterator> StorageIterator for MergeIterator<I> {
     fn key(&self) -> &[u8] {
-        unimplemented!()
+        self.current.as_ref().unwrap().1.key()
     }
 
     fn value(&self) -> &[u8] {
-        unimplemented!()
+        self.current.as_ref().unwrap().1.value()
     }
 
     fn is_valid(&self) -> bool {
-        unimplemented!()
+        self.current
+            .as_ref()
+            .map(|hw| hw.1.is_valid())
+            .unwrap_or(false)
     }
 
     fn next(&mut self) -> Result<()> {
-        unimplemented!()
+        let current_key = self.current.as_mut().unwrap().1.key();
+
+        // Skip the current key in all iterators other than the current iterator.
+        while let Some(mut pm) = self.iters.peek_mut() {
+            assert!(pm.1.key() >= current_key);
+            if pm.1.key() == current_key {
+                // Skip this key in this iter.
+                if let e @ Err(_) = pm.1.next() {
+                    // If seek errors, remove it from the heap and report error.
+                    return e;
+                }
+                // If this iter becomes invalid, remove it from the heap.
+                if !pm.1.is_valid() {
+                    PeekMut::pop(pm);
+                }
+            } else {
+                // Remaining keys are larger than current key.
+                break;
+            }
+        }
+
+        // Seek the current iterator to the next key and put it back to the heap.
+        let mut current = self.current.take().unwrap();
+        current.1.next()?;
+        if current.1.is_valid() {
+            self.iters.push(current);
+        }
+        self.seek_to_next_in_heap();
+        Ok(())
     }
 }
