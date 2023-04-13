@@ -10,9 +10,10 @@ use bytes::Bytes;
 use parking_lot::RwLock;
 
 use crate::block::Block;
+use crate::iterators::StorageIterator;
 use crate::lsm_iterator::{FusedIterator, LsmIterator};
 use crate::mem_table::MemTable;
-use crate::table::SsTable;
+use crate::table::{SsTable, SsTableIterator};
 
 pub type BlockCache = moka::sync::Cache<(usize, usize), Arc<Block>>;
 
@@ -57,19 +58,51 @@ impl LsmStorage {
 
     /// Get a key from the storage. In day 7, this can be further optimized by using a bloom filter.
     pub fn get(&self, key: &[u8]) -> Result<Option<Bytes>> {
-        unimplemented!()
+        let i = self.inner.read().clone();
+
+        // Search in memtables, from latest to earliest.
+        if let Some(val) = i
+            .imm_memtables
+            .iter()
+            .chain(std::iter::once(&i.memtable))
+            .rev()
+            .find_map(|memtable| memtable.get(key))
+        {
+            // Empty value means the key is deleted.
+            if val.is_empty() {
+                return Ok(None);
+            }
+            return Ok(Some(val));
+        }
+
+        // Search in L0 SSTables, from latest to earliest.
+        for table in i.l0_sstables.iter().rev() {
+            let iter = SsTableIterator::create_and_seek_to_key(table.clone(), key)?;
+            if iter.is_valid() && iter.key() == key {
+                // Empty value means the key is deleted.
+                let val =
+                    (!iter.value().is_empty()).then_some(Bytes::copy_from_slice(iter.value()));
+                return Ok(val);
+            }
+        }
+
+        // TODO(after SST merge): Search in L1 - L6 SSTables.
+        Ok(None)
     }
 
     /// Put a key-value pair into the storage by writing into the current memtable.
     pub fn put(&self, key: &[u8], value: &[u8]) -> Result<()> {
         assert!(!value.is_empty(), "value cannot be empty");
         assert!(!key.is_empty(), "key cannot be empty");
-        unimplemented!()
+        self.inner.read().memtable.put(key, value);
+        Ok(())
     }
 
     /// Remove a key from the storage by writing an empty value.
-    pub fn delete(&self, _key: &[u8]) -> Result<()> {
-        unimplemented!()
+    pub fn delete(&self, key: &[u8]) -> Result<()> {
+        assert!(!key.is_empty(), "key cannot be empty");
+        self.inner.read().memtable.put(key, &[]);
+        Ok(())
     }
 
     /// Persist data to disk.
