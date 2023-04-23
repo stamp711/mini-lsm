@@ -2,12 +2,12 @@
 #![allow(dead_code)] // TODO(you): remove this lint after implementing this mod
 
 use std::ops::Bound;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use anyhow::Result;
 use bytes::Bytes;
-use parking_lot::RwLock;
+use parking_lot::{Mutex, RwLock};
 
 use crate::block::Block;
 use crate::iterators::merge_iterator::MergeIterator;
@@ -15,7 +15,7 @@ use crate::iterators::two_merge_iterator::TwoMergeIterator;
 use crate::iterators::StorageIterator;
 use crate::lsm_iterator::{FusedIterator, LsmIterator};
 use crate::mem_table::MemTable;
-use crate::table::{SsTable, SsTableIterator};
+use crate::table::{SsTable, SsTableBuilder, SsTableIterator};
 use crate::util::map_bound;
 
 pub type BlockCache = moka::sync::Cache<(usize, usize), Arc<Block>>;
@@ -50,12 +50,16 @@ impl LsmStorageInner {
 /// The storage interface of the LSM tree.
 pub struct LsmStorage {
     inner: Arc<RwLock<Arc<LsmStorageInner>>>,
+    path: PathBuf,
+    flush_lock: Mutex<()>,
 }
 
 impl LsmStorage {
     pub fn open(path: impl AsRef<Path>) -> Result<Self> {
         Ok(Self {
             inner: Arc::new(RwLock::new(Arc::new(LsmStorageInner::create()))),
+            path: path.as_ref().to_owned(),
+            flush_lock: Mutex::new(()),
         })
     }
 
@@ -108,12 +112,46 @@ impl LsmStorage {
         Ok(())
     }
 
+    fn path_of_sst_with_id(&self, id: usize) -> PathBuf {
+        self.path.join(format!("{}.sst", id))
+    }
+
     /// Persist data to disk.
     ///
     /// In day 3: flush the current memtable to disk as L0 SST.
     /// In day 6: call `fsync` on WAL.
     pub fn sync(&self) -> Result<()> {
-        unimplemented!()
+        let _flush_guard = self.flush_lock.lock();
+
+        let memtable;
+        let sst_id;
+
+        // 1. Move current memtable to immutable memtables.
+        {
+            let mut g = self.inner.write();
+            let mut snapshot = g.as_ref().clone();
+            memtable = std::mem::replace(&mut snapshot.memtable, Arc::new(MemTable::create()));
+            sst_id = snapshot.next_sst_id;
+            snapshot.imm_memtables.push(memtable.clone());
+            *g = Arc::new(snapshot);
+        }
+
+        // 2. Flush the memtable to disk.
+        let mut builder = SsTableBuilder::new(4096); // 4 KIB SST size.
+        memtable.flush(&mut builder)?;
+        let sst = Arc::new(builder.build(sst_id, None, self.path_of_sst_with_id(sst_id))?);
+
+        // 3. Move the SSTable to L0.
+        {
+            let mut g = self.inner.write();
+            let mut snapshot = g.as_ref().clone();
+            snapshot.imm_memtables.pop();
+            snapshot.l0_sstables.push(sst);
+            snapshot.next_sst_id += 1;
+            *g = Arc::new(snapshot);
+        }
+
+        Ok(())
     }
 
     /// Create an iterator over a range of keys.
