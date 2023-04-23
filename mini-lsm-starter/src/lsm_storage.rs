@@ -52,6 +52,7 @@ pub struct LsmStorage {
     inner: Arc<RwLock<Arc<LsmStorageInner>>>,
     path: PathBuf,
     flush_lock: Mutex<()>,
+    block_cache: BlockCache,
 }
 
 impl LsmStorage {
@@ -60,6 +61,7 @@ impl LsmStorage {
             inner: Arc::new(RwLock::new(Arc::new(LsmStorageInner::create()))),
             path: path.as_ref().to_owned(),
             flush_lock: Mutex::new(()),
+            block_cache: BlockCache::new(4 * bytesize::GIB),
         })
     }
 
@@ -137,7 +139,7 @@ impl LsmStorage {
         }
 
         // 2. Flush the memtable to disk.
-        let mut builder = SsTableBuilder::new(4096); // 4 KIB SST size.
+        let mut builder = SsTableBuilder::new(4 * bytesize::KIB as usize); // 4 KIB SST size.
         memtable.flush(&mut builder)?;
         let sst = Arc::new(builder.build(sst_id, None, self.path_of_sst_with_id(sst_id))?);
 

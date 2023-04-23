@@ -106,9 +106,11 @@ impl SsTableBuilder {
         buf.put_u32_le(block_meta_offset as u32);
         let file = FileObject::create(path.as_ref(), buf)?;
         Ok(SsTable {
+            id,
             file,
             block_metas: self.meta,
             block_meta_offset,
+            block_cache,
         })
     }
 

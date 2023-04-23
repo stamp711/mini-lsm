@@ -15,20 +15,22 @@ pub struct SsTableIterator {
 fn seek_table_to_first(table: &Arc<SsTable>) -> Result<(usize, BlockIterator)> {
     Ok((
         0,
-        BlockIterator::create_and_seek_to_first(table.read_block(0)?),
+        BlockIterator::create_and_seek_to_first(table.read_block_cached(0)?),
     ))
 }
 
 fn seek_table_to_key(table: &Arc<SsTable>, key: &[u8]) -> Result<(usize, BlockIterator)> {
     let block_idx = table.find_block_idx(key);
-    let mut block_iter = BlockIterator::create_and_seek_to_key(table.read_block(block_idx)?, key);
+    let mut block_iter =
+        BlockIterator::create_and_seek_to_key(table.read_block_cached(block_idx)?, key);
 
     if !block_iter.is_valid() {
         // This means that the key is larger than the largest key in the block.
         // We need to seek to the first key in the next block.
         let block_idx = block_idx + 1;
         if block_idx < table.num_of_blocks() {
-            block_iter = BlockIterator::create_and_seek_to_first(table.read_block(block_idx)?);
+            block_iter =
+                BlockIterator::create_and_seek_to_first(table.read_block_cached(block_idx)?);
         }
     }
 
@@ -92,8 +94,9 @@ impl StorageIterator for SsTableIterator {
             // If this is not the last block, we need to seek to the first key in the next block.
             if self.block_idx + 1 < self.table.num_of_blocks() {
                 let next_block_idx = self.block_idx + 1;
-                let next_block_iter =
-                    BlockIterator::create_and_seek_to_first(self.table.read_block(next_block_idx)?);
+                let next_block_iter = BlockIterator::create_and_seek_to_first(
+                    self.table.read_block_cached(next_block_idx)?,
+                );
                 self.block_idx = next_block_idx;
                 self.block_iter = next_block_iter;
             }
